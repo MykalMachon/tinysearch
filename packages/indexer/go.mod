@@ -1,4 +1,4 @@
-module indexer
+module github.com/mykalmachon/tinysearch/indexer
 
 go 1.21.6
 

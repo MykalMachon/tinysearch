@@ -4,93 +4,80 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"time"
 
-	"github.com/joho/godotenv"
-
+	_ "github.com/joho/godotenv/autoload"
+	"github.com/mykalmachon/tinysearch/indexer/models"
+	"github.com/mykalmachon/tinysearch/indexer/seeds"
 	"github.com/redis/go-redis/v9"
-	uuid "github.com/satori/go.uuid"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
 var redisClient *redis.Client
-var db *gorm.DB
+var dbClient *gorm.DB
 
-var ctx context.Context
-var log slog.Logger
+var ctx context.Context = context.Background()
+var log slog.Logger = *slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-type Source struct {
-	gorm.Model
-	Id            uuid.UUID `gorm:"primary_key;type:uuid;default:uuid_generate_v4()"`
-	Name          string
-	Description   string
-	Url           string    `gorm:"unique"`
-	LastIndexedAt time.Time `gorm:"default:null"`
-}
-
-type Document struct {
-	gorm.Model
-	Id        uuid.UUID `gorm:"primary_key;type:uuid;default:uuid_generate_v4()"`
-	SourceID  uint      `gorm:"type:uuid REFERENCES sources(id)"`
-	Source    Source    `gorm:"foreignKey:SourceID;AssociationForeignKey:ID"`
-	Title     string
-	Content   string
-	CreatedAt time.Time `gorm:"default:now()"`
-	UpdatedAt time.Time `gorm:"default:now()"`
-}
-
-func init() {
-	// do setup here... this is always run before main
-	// * initialize the logger
-	jsonHandler := slog.NewJSONHandler(os.Stdout, nil)
-	log = *slog.New(jsonHandler)
-
-	log.Info("initializing indexer")
-
-	// * load environment variables
-	if err := godotenv.Load(); err != nil {
-		log.Error("failed to load environment variables", "error", err.Error())
-		os.Exit(1)
-	}
-
-	// * initialize the postgresql database and run migrations
-	newDb, err := gorm.Open(postgres.New(postgres.Config{
-		DSN: os.Getenv("DATABASE_URL"),
-	}), &gorm.Config{})
-
-	if err != nil {
-		log.Error("failed to connect to database", "error", err.Error())
-		os.Exit(1)
-	}
-
-	db = newDb
-
-	log.Info("running migrations")
-	if err := db.AutoMigrate(&Source{}, &Document{}); err != nil {
-		log.Error("failed to run migrations", "error", err.Error())
-		os.Exit(1)
-	}
-	log.Info("migrations complete")
-
-	// * initialize the redis queue and make sure it works
-	ctx = context.Background()
-	redisClient = redis.NewClient(&redis.Options{
+func OpenRedisConnection() (*redis.Client, error) {
+	rc := redis.NewClient(&redis.Options{
 		Addr:     os.Getenv("REDIS_URL"),
 		Password: os.Getenv("REDIS_PASSWORD"),
 		DB:       0,
 	})
 
-	if err := redisClient.Ping(ctx).Err(); err != nil {
+	err := rc.Ping(ctx).Err()
+
+	if err != nil {
 		log.Error("failed to connect to redis", "error", err.Error())
+	}
+
+	return rc, err
+}
+
+func OpenDatabaseConnection() (*gorm.DB, error) {
+	db, err := gorm.Open(postgres.New(postgres.Config{
+		DSN: os.Getenv("DATABASE_URL"),
+	}), &gorm.Config{})
+
+	if err != nil {
+		log.Error("failed to connect to database", "error", err.Error())
+	}
+
+	return db, err
+}
+
+func init() {
+	log.Info("initializing indexer")
+
+	tmpdbClient, dbErr := OpenDatabaseConnection()
+	tmpRedisClient, redisErr := OpenRedisConnection()
+
+	if dbErr != nil || redisErr != nil {
+		log.Error("failed to initialize indexer", "error", "failed to connect to database or redis")
 		os.Exit(1)
 	}
+
+	dbClient = tmpdbClient
+	redisClient = tmpRedisClient
+
+	log.Info("running database migrations")
+	if err := dbClient.AutoMigrate(&models.Source{}, &models.Document{}); err != nil {
+		log.Error("failed to run migrations", "error", err.Error())
+		os.Exit(1)
+	}
+	log.Info("database migrations complete")
+
+	log.Info("dababase is being seeeded")
+	seeds.All(dbClient, log)
+	log.Info("database seeding complete")
 }
 
 func main() {
-	log.Info("starting indexer")
+	log.Info("starting main indexer process")
 
 	// start the indexer workers
+
 	// 1. query all rows in the source table in the database
 	// 2. for each row, enqueue a job to the redis queue
 
