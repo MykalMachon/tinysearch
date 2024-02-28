@@ -1,0 +1,6 @@
+# environment goodies
+.env
+.env.example 
+
+# docker stuff
+docker-compose.yml

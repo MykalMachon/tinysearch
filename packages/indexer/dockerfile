@@ -1,0 +1,14 @@
+# Use the official Golang image as the base image
+FROM golang:1.21.6
+
+# Set the working directory inside the container
+WORKDIR /opt/indexer
+
+# Copy the source code into the container
+COPY . .
+
+# Build the Go application
+RUN GOOS=linux go build -o ts-indexer
+
+# Run the app 🏃💨
+CMD ["./ts-indexer"]
